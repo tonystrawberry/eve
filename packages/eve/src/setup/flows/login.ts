@@ -1,4 +1,4 @@
-import { createPromptCommandOutput } from "#setup/cli/index.js";
+import { createPromptCommandOutput, withNetworkSpinner } from "#setup/cli/index.js";
 import { runVercel } from "#setup/primitives/run-vercel.js";
 import { getVercelAuthStatus, type VercelAuthStatus } from "#setup/vercel-project.js";
 
@@ -51,19 +51,6 @@ const defaultDeps: LoginFlowDeps = {
     }),
 };
 
-async function withSpinner<T>(
-  prompter: Prompter,
-  message: string,
-  task: () => Promise<T>,
-): Promise<T> {
-  const spinner = prompter.log.spinner?.(message);
-  try {
-    return await task();
-  } finally {
-    spinner?.stop();
-  }
-}
-
 /**
  * Runs `vercel login` while the dev TUI stays live, mirroring the Slack Connect
  * browser wait: an interactive prompter races the login subprocess against a
@@ -80,7 +67,7 @@ async function runVercelLoginWithControls(
   signal: AbortSignal | undefined,
 ): Promise<boolean | "cancelled"> {
   if (prompter.awaitChoice === undefined) {
-    return withSpinner(prompter, "Opening Vercel login in your browser…", () =>
+    return withNetworkSpinner(prompter, "Opening Vercel login in your browser…", () =>
       deps.runVercelLogin({ cwd: appRoot, onOutput, signal }),
     );
   }
@@ -128,7 +115,11 @@ export async function runLoginFlow(input: {
 
   const probeAuth = (): Promise<VercelAuthStatus> => deps.getVercelAuthStatus(appRoot, { signal });
 
-  const initialStatus = await withSpinner(prompter, "Checking your Vercel login…", probeAuth);
+  const initialStatus = await withNetworkSpinner(
+    prompter,
+    "Checking your Vercel login…",
+    probeAuth,
+  );
   signal?.throwIfAborted();
   switch (initialStatus) {
     case "authenticated":
@@ -149,7 +140,7 @@ export async function runLoginFlow(input: {
   if (outcome === "cancelled") return { kind: "cancelled" };
   if (!outcome) return { kind: "failed" };
 
-  const status = await withSpinner(prompter, "Confirming your Vercel login…", probeAuth);
+  const status = await withNetworkSpinner(prompter, "Confirming your Vercel login…", probeAuth);
   signal?.throwIfAborted();
   switch (status) {
     case "authenticated":

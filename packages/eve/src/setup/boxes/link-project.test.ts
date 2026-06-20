@@ -12,7 +12,7 @@ const silentSink: OutputSink = { write: () => {} };
 
 function fakeDeps(overrides: Partial<LinkProjectDeps> = {}): LinkProjectDeps {
   return {
-    linkProject: vi.fn(async () => true),
+    linkProject: vi.fn(async () => ({ projectId: "prj_my_agent", projectName: "my-agent" })),
     detectProjectResolution: vi.fn(async () => ({
       kind: "linked" as const,
       projectId: "prj_my_agent",
@@ -68,9 +68,13 @@ describe("linkVercelProject box", () => {
   });
 
   it("throws when linkProject does not complete", async () => {
-    const deps = fakeDeps({ linkProject: vi.fn(async () => false) });
+    const deps = fakeDeps({ linkProject: vi.fn(async () => undefined) });
     const state = resolvedState();
-    state.vercelProject = { kind: "existing", project: "my-agent", team: "team" };
+    state.vercelProject = {
+      kind: "existing",
+      project: { projectId: "prj_my_agent", projectName: "my-agent" },
+      team: "team",
+    };
     const box = linkVercelProject({ prompter: createPrompter(), deps });
 
     await expect(runHeadless([box], state, silentSink)).rejects.toThrow(
@@ -84,11 +88,31 @@ describe("linkVercelProject box", () => {
       detectProjectResolution: vi.fn(async () => ({ kind: "unresolved" as const })),
     });
     const state = resolvedState();
-    state.vercelProject = { kind: "existing", project: "my-agent", team: "team" };
+    state.vercelProject = {
+      kind: "existing",
+      project: { projectId: "prj_my_agent", projectName: "my-agent" },
+      team: "team",
+    };
     const box = linkVercelProject({ prompter: createPrompter(), deps });
 
     await expect(runHeadless([box], state, silentSink)).rejects.toThrow(
       /could not resolve the Vercel project/,
+    );
+  });
+
+  it("rejects link metadata for a different project", async () => {
+    const deps = fakeDeps({
+      detectProjectResolution: vi.fn(async () => ({
+        kind: "linked" as const,
+        projectId: "prj_other",
+      })),
+    });
+    const state = resolvedState();
+    state.vercelProject = { kind: "new", project: "my-agent", team: "team" };
+    const box = linkVercelProject({ prompter: createPrompter(), deps });
+
+    await expect(runHeadless([box], state, silentSink)).rejects.toThrow(
+      /linked project does not match the selected project/,
     );
   });
 });

@@ -2,9 +2,11 @@ import { HumanActionRequiredError } from "#setup/human-action.js";
 import { captureVercel, type VercelCaptureFailure } from "#setup/primitives/index.js";
 import { z } from "zod";
 
-import { isForbiddenApiFailure, normalizeVercelApiResult } from "./vercel-api-failure.js";
+import { isForbiddenApiFailure } from "./vercel-api-failure.js";
+import type { VercelProjectOperationOptions } from "./project-resolution.js";
 
-const RECENT_PROJECTS_API_PATH = "/v9/projects?limit=20";
+export type { VercelProjectOperationOptions };
+
 const PROJECT_LIST_TIMEOUT_MS = 15_000;
 
 const VercelTeamListEntrySchema = z.object({
@@ -19,7 +21,6 @@ type VercelTeamListEntry = z.infer<typeof VercelTeamListEntrySchema>;
 const VercelProjectListEntrySchema = z.object({
   name: z.string(),
   id: z.string(),
-  updatedAt: z.number(),
 });
 
 /** Project identity used by the existing-project picker. */
@@ -49,11 +50,6 @@ interface VercelProjectPage {
   readonly next?: number;
 }
 
-/** Cancellation options shared by Vercel project lookups. */
-export interface VercelProjectOperationOptions {
-  readonly signal?: AbortSignal;
-}
-
 /** Parses one JSON response captured from the Vercel CLI. */
 export function parseVercelJson(stdout: string, description: string): unknown {
   try {
@@ -79,13 +75,6 @@ function parseProjectPage(stdout: string): VercelProjectPage {
   return next === null || next === undefined
     ? { projects: parsed.data.projects }
     : { projects: parsed.data.projects, next };
-}
-
-function projectsApiPath(search: string | undefined, until: number | undefined): string {
-  let path = RECENT_PROJECTS_API_PATH;
-  if (search !== undefined) path += `&search=${encodeURIComponent(search)}`;
-  if (until !== undefined) path += `&until=${until}`;
-  return path;
 }
 
 /** Converts a scoped API denial into the Vercel re-authentication action. */
@@ -132,18 +121,16 @@ export async function listTeams(
 async function fetchProjectPage(
   projectRoot: string,
   team: string,
-  options: VercelProjectOperationOptions & { readonly search?: string; readonly until?: number },
+  options: VercelProjectOperationOptions & { readonly search?: string; readonly next?: number },
 ): Promise<VercelProjectPage> {
-  const result = normalizeVercelApiResult(
-    await captureVercel(
-      ["api", projectsApiPath(options.search, options.until), "--scope", team, "--raw"],
-      {
-        cwd: projectRoot,
-        signal: options.signal,
-        timeoutMs: PROJECT_LIST_TIMEOUT_MS,
-      },
-    ),
-  );
+  const args = ["project", "ls", "--format", "json", "--scope", team];
+  if (options.search !== undefined) args.push("--filter", options.search);
+  if (options.next !== undefined) args.push("--next", String(options.next));
+  const result = await captureVercel(args, {
+    cwd: projectRoot,
+    signal: options.signal,
+    timeoutMs: PROJECT_LIST_TIMEOUT_MS,
+  });
   options.signal?.throwIfAborted();
   if (!result.ok) {
     if (isForbiddenApiFailure(result.failure)) requireVercelTeamAccess(result.failure);
@@ -173,14 +160,14 @@ export async function searchProjects(
 
   const projects = new Map<string, VercelProjectListEntry>();
   const cursors = new Set<number>();
-  let until: number | undefined;
+  let next: number | undefined;
 
   while (true) {
     const pageOptions: VercelProjectOperationOptions & {
       search: string;
-      until?: number;
+      next?: number;
     } = { ...options, search };
-    if (until !== undefined) pageOptions.until = until;
+    if (next !== undefined) pageOptions.next = next;
     const page = await fetchProjectPage(projectRoot, team, pageOptions);
     for (const project of page.projects) projects.set(project.id, project);
     if (page.next === undefined) return [...projects.values()];
@@ -190,6 +177,6 @@ export async function searchProjects(
       );
     }
     cursors.add(page.next);
-    until = page.next;
+    next = page.next;
   }
 }

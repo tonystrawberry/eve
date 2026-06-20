@@ -4,7 +4,6 @@ import type { Prompter } from "./prompter.js";
 interface PickableVercelProject {
   readonly id: string;
   readonly name: string;
-  readonly updatedAt: number;
 }
 
 /** Inputs for choosing from recent projects with optional server-side search. */
@@ -17,36 +16,30 @@ interface VercelProjectPickerOptions {
 
 const SEARCH_ALL_PROJECTS = "\0search-all-projects";
 
-function newestProjectsFirst(projects: readonly PickableVercelProject[]): PickableVercelProject[] {
-  return projects.toSorted((left, right) => right.updatedAt - left.updatedAt);
-}
-
-function mergeProjects(
-  current: readonly PickableVercelProject[],
-  found: readonly PickableVercelProject[],
-): PickableVercelProject[] {
-  const projects = new Map(current.map((project) => [project.id, project]));
-  for (const project of found) projects.set(project.id, project);
-  return newestProjectsFirst([...projects.values()]);
-}
-
 /** Shows recent projects and searches the full team scope on request. */
 export async function pickExistingVercelProject(
   options: VercelProjectPickerOptions,
-): Promise<string> {
-  let projects = newestProjectsFirst(options.projects);
+): Promise<PickableVercelProject> {
+  let projects = options.projects;
+  let showingSearchResults = false;
 
   while (true) {
     const selected = await options.prompter.select({
       message: "Project to link",
-      search: true,
-      placeholder: "type to filter projects",
+      ...(showingSearchResults
+        ? { search: true as const, placeholder: "type to filter results" }
+        : {}),
       options: [
-        ...projects.map((project) => ({ value: project.name, label: project.name })),
         { value: SEARCH_ALL_PROJECTS, label: "Search all projects" },
+        ...projects.map((project) => ({ value: project.id, label: project.name })),
       ],
+      initialValue: projects[0]?.id,
     });
-    if (selected !== SEARCH_ALL_PROJECTS) return selected;
+    if (selected !== SEARCH_ALL_PROJECTS) {
+      const project = projects.find((candidate) => candidate.id === selected);
+      if (project === undefined) throw new Error("Selected Vercel project is not available.");
+      return project;
+    }
 
     const query = (
       await options.prompter.text({
@@ -58,8 +51,11 @@ export async function pickExistingVercelProject(
     const found = await options.search(query);
     if (found.length === 0) {
       options.prompter.note(`No projects matched "${query}" in ${options.team}.`);
+      projects = options.projects;
+      showingSearchResults = false;
       continue;
     }
-    projects = mergeProjects(projects, found);
+    projects = found;
+    showingSearchResults = true;
   }
 }

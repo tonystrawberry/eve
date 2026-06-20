@@ -24,36 +24,26 @@ const VercelProjectReferenceSchema = z.object({
 /** Project and owner identifiers from a valid on-disk Vercel link. */
 export type VercelProjectReference = z.infer<typeof VercelProjectReferenceSchema>;
 
-type ProjectLinkDirectoryName = ".vercel" | ".now";
-
-async function isDirectory(path: string): Promise<boolean> {
+/** Rejects Vercel's unsupported legacy link directory before link mutation. */
+export async function assertNoLegacyProjectLinkDirectory(projectRoot: string): Promise<void> {
   try {
-    return (await stat(path)).isDirectory();
-  } catch {
-    return false;
+    if ((await stat(join(projectRoot, ".now"))).isDirectory()) {
+      throw new Error(
+        "Legacy Vercel link directory `.now` is not supported. Remove `.now` before linking this project.",
+      );
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
 }
 
-async function projectLinkDirectories(projectRoot: string): Promise<{
-  readonly hasVercel: boolean;
-  readonly hasNow: boolean;
-}> {
-  const [hasVercel, hasNow] = await Promise.all([
-    isDirectory(join(projectRoot, ".vercel")),
-    isDirectory(join(projectRoot, ".now")),
-  ]);
-  return { hasVercel, hasNow };
-}
-
-/** Reads a validated project reference from Vercel's current or legacy metadata directory. */
+/** Reads a validated project reference from Vercel's link metadata directory. */
 export async function readProjectLink(
   projectPath: string,
 ): Promise<VercelProjectReference | undefined> {
+  await assertNoLegacyProjectLinkDirectory(projectPath);
   try {
-    const directories = await projectLinkDirectories(projectPath);
-    if (directories.hasVercel && directories.hasNow) return undefined;
-    const directory: ProjectLinkDirectoryName = directories.hasNow ? ".now" : ".vercel";
-    const raw = await readFile(join(projectPath, directory, "project.json"), "utf8");
+    const raw = await readFile(join(projectPath, ".vercel", "project.json"), "utf8");
     const parsed = VercelProjectReferenceSchema.safeParse(JSON.parse(raw));
     return parsed.success ? parsed.data : undefined;
   } catch {
@@ -65,8 +55,9 @@ interface VercelApiProject {
   targets?: { production?: { alias?: unknown } };
 }
 
-export interface ProjectDetectionOptions {
-  signal?: AbortSignal;
+/** Cancellation options shared by Vercel project read/operation helpers. */
+export interface VercelProjectOperationOptions {
+  readonly signal?: AbortSignal;
 }
 
 function pickShortestAlias(aliases: unknown): string | undefined {
@@ -85,7 +76,7 @@ async function fetchProductionAlias(
   projectId: string,
   orgId: string,
   projectPath: string,
-  options: ProjectDetectionOptions,
+  options: VercelProjectOperationOptions,
 ): Promise<string | undefined> {
   const result = await captureVercel(
     ["api", `/v9/projects/${projectId}?teamId=${orgId}`, "--scope", orgId],
@@ -107,7 +98,7 @@ async function fetchProductionAlias(
  */
 export async function detectDeployment(
   projectPath: string,
-  options: ProjectDetectionOptions = {},
+  options: VercelProjectOperationOptions = {},
 ): Promise<DeploymentInfo> {
   options.signal?.throwIfAborted();
   const link = await readProjectLink(projectPath);
@@ -145,7 +136,7 @@ async function fetchVercelName(
   apiPath: string,
   orgId: string,
   projectPath: string,
-  options: ProjectDetectionOptions,
+  options: VercelProjectOperationOptions,
 ): Promise<string | undefined> {
   const result = await captureVercel(["api", apiPath, "--scope", orgId], {
     cwd: projectPath,
@@ -175,7 +166,7 @@ async function fetchVercelName(
  */
 export async function detectProjectIdentity(
   projectPath: string,
-  options: ProjectDetectionOptions = {},
+  options: VercelProjectOperationOptions = {},
 ): Promise<ProjectIdentity | undefined> {
   options.signal?.throwIfAborted();
   const link = await readProjectLink(projectPath);
@@ -223,7 +214,7 @@ export function projectResolutionFromDeployment(deployment: DeploymentInfo): Pro
  */
 export async function detectProjectResolution(
   projectRoot: string,
-  options: ProjectDetectionOptions = {},
+  options: VercelProjectOperationOptions = {},
 ): Promise<ProjectResolution> {
   return projectResolutionFromDeployment(await detectDeployment(projectRoot, options));
 }

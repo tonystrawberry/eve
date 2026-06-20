@@ -14,6 +14,10 @@ const captured = (value: unknown): VercelCaptureResult => ({
   ok: true,
   stdout: JSON.stringify(value),
 });
+const failed = (stderr: string): VercelCaptureResult => ({
+  ok: false,
+  failure: { code: 1, message: "Vercel CLI failed.", stderr, stdout: "" },
+});
 
 beforeEach(() => {
   mockedCaptureVercel.mockReset();
@@ -68,28 +72,23 @@ describe("listRecentProjects", () => {
   it("returns one team-scoped page without following its cursor", async () => {
     mockedCaptureVercel.mockResolvedValue(
       captured({
-        projects: [{ id: "prj_recent", name: "recent", updatedAt: 10 }],
+        projects: [{ id: "prj_recent", name: "recent" }],
         pagination: { next: 8 },
       }),
     );
 
     await expect(listRecentProjects("/repo", "team-a")).resolves.toEqual([
-      { id: "prj_recent", name: "recent", updatedAt: 10 },
+      { id: "prj_recent", name: "recent" },
     ]);
     expect(mockedCaptureVercel).toHaveBeenCalledOnce();
     expect(mockedCaptureVercel).toHaveBeenCalledWith(
-      ["api", "/v9/projects?limit=20", "--scope", "team-a", "--raw"],
+      ["project", "ls", "--format", "json", "--scope", "team-a"],
       { cwd: "/repo", signal: undefined, timeoutMs: 15_000 },
     );
   });
 
   it("routes a scoped SSO denial to a human action", async () => {
-    mockedCaptureVercel.mockResolvedValue({
-      ok: true,
-      stdout: JSON.stringify({
-        error: { code: "team_unauthorized", message: "This team requires SAML Single Sign-On." },
-      }),
-    });
+    mockedCaptureVercel.mockResolvedValue(failed("This team requires SAML Single Sign-On."));
 
     await expect(listRecentProjects("/repo", "team-a")).rejects.toMatchObject({
       name: "HumanActionRequiredError",
@@ -115,27 +114,43 @@ describe("searchProjects", () => {
     mockedCaptureVercel
       .mockResolvedValueOnce(
         captured({
-          projects: [{ id: "prj_a", name: "agent", updatedAt: 10 }],
+          projects: [{ id: "prj_a", name: "agent" }],
           pagination: { next: 7 },
         }),
       )
       .mockResolvedValueOnce(
         captured({
           projects: [
-            { id: "prj_a", name: "agent", updatedAt: 10 },
-            { id: "prj_b", name: "agent-api", updatedAt: 5 },
+            { id: "prj_a", name: "agent" },
+            { id: "prj_b", name: "agent-api" },
           ],
           pagination: { next: null },
         }),
       );
 
     await expect(searchProjects("/repo", "team-a", " agent ")).resolves.toEqual([
-      { id: "prj_a", name: "agent", updatedAt: 10 },
-      { id: "prj_b", name: "agent-api", updatedAt: 5 },
+      { id: "prj_a", name: "agent" },
+      { id: "prj_b", name: "agent-api" },
     ]);
     expect(mockedCaptureVercel).toHaveBeenNthCalledWith(
+      1,
+      ["project", "ls", "--format", "json", "--scope", "team-a", "--filter", "agent"],
+      { cwd: "/repo", signal: undefined, timeoutMs: 15_000 },
+    );
+    expect(mockedCaptureVercel).toHaveBeenNthCalledWith(
       2,
-      ["api", "/v9/projects?limit=20&search=agent&until=7", "--scope", "team-a", "--raw"],
+      [
+        "project",
+        "ls",
+        "--format",
+        "json",
+        "--scope",
+        "team-a",
+        "--filter",
+        "agent",
+        "--next",
+        "7",
+      ],
       { cwd: "/repo", signal: undefined, timeoutMs: 15_000 },
     );
   });

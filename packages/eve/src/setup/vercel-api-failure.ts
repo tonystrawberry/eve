@@ -23,6 +23,11 @@ function apiError(failure: VercelCaptureFailure) {
   return apiErrorFromStdout(failure.stdout);
 }
 
+function apiFailureText(failure: VercelCaptureFailure): string {
+  const error = apiError(failure);
+  return `${String(error?.code ?? "")} ${error?.message ?? ""} ${failure.stderr}`.toLowerCase();
+}
+
 /** Treats a structured API error as a failure even when `vercel api --raw` exits zero. */
 export function normalizeVercelApiResult(result: VercelCaptureResult): VercelCaptureResult {
   if (!result.ok) return result;
@@ -42,29 +47,17 @@ export function normalizeVercelApiResult(result: VercelCaptureResult): VercelCap
 
 /** Whether a Vercel API failure proves that the requested resource does not exist. */
 export function isNotFoundApiFailure(failure: VercelCaptureFailure): boolean {
-  const error = apiError(failure);
-  const code = String(error?.code ?? "").toLowerCase();
-  return (
-    code === "404" ||
-    code === "not_found" ||
-    (error?.message?.toLowerCase().includes("not found") ?? false)
-  );
+  return /(^|\W)(404|not_found)(\W|$)|not found/.test(apiFailureText(failure));
 }
 
 /** Whether a Vercel API failure proves that the requested resource already exists. */
 export function isConflictApiFailure(failure: VercelCaptureFailure): boolean {
-  const error = apiError(failure);
-  const code = String(error?.code ?? "").toLowerCase();
-  const message = error?.message?.toLowerCase() ?? "";
-  return code === "409" || code === "conflict" || message.includes("already exists");
+  return /(^|\W)(409|conflict)(\W|$)|already exists/.test(apiFailureText(failure));
 }
 
 /** Whether a scoped Vercel API request was denied. */
 export function isForbiddenApiFailure(failure: VercelCaptureFailure): boolean {
-  const error = apiError(failure);
-  const text =
-    `${String(error?.code ?? "")} ${error?.message ?? ""} ${failure.stderr}`.toLowerCase();
   return /(^|\W)(403|forbidden|not_authorized|team_unauthorized|sso|saml)(\W|$)|not authorized/.test(
-    text,
+    apiFailureText(failure),
   );
 }

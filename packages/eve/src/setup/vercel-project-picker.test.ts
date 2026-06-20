@@ -5,14 +5,16 @@ import { createFakePrompter } from "#internal/testing/fake-prompter.js";
 import { pickExistingVercelProject } from "./vercel-project-picker.js";
 
 describe("pickExistingVercelProject", () => {
-  it("orders recent projects newest first", async () => {
+  it("preserves CLI order and keeps full-team search reachable", async () => {
     const single = vi.fn((options) => {
       expect(options.options.map((option: { label: string }) => option.label)).toEqual([
-        "newer",
-        "older",
         "Search all projects",
+        "older",
+        "newer",
       ]);
-      return "newer";
+      expect(options.search).toBeUndefined();
+      expect(options.initialValue).toBe("prj_old");
+      return "prj_new";
     });
     const { prompter } = createFakePrompter({ single });
 
@@ -21,15 +23,15 @@ describe("pickExistingVercelProject", () => {
         prompter,
         team: "team-a",
         projects: [
-          { id: "prj_old", name: "older", updatedAt: 1 },
-          { id: "prj_new", name: "newer", updatedAt: 2 },
+          { id: "prj_old", name: "older" },
+          { id: "prj_new", name: "newer" },
         ],
         search: vi.fn(),
       }),
-    ).resolves.toBe("newer");
+    ).resolves.toEqual({ id: "prj_new", name: "newer" });
   });
 
-  it("searches the full team scope and merges results by id", async () => {
+  it("replaces recents with full-team search results", async () => {
     const single = vi
       .fn()
       .mockImplementationOnce(
@@ -40,15 +42,17 @@ describe("pickExistingVercelProject", () => {
       )
       .mockImplementationOnce((options) => {
         expect(options.options.map((option: { label: string }) => option.label)).toEqual([
-          "found",
-          "recent-updated",
           "Search all projects",
+          "recent-updated",
+          "found",
         ]);
-        return "found";
+        expect(options.search).toBe(true);
+        expect(options.initialValue).toBe("prj_recent");
+        return "prj_found";
       });
     const search = vi.fn(async () => [
-      { id: "prj_recent", name: "recent-updated", updatedAt: 20 },
-      { id: "prj_found", name: "found", updatedAt: 30 },
+      { id: "prj_recent", name: "recent-updated" },
+      { id: "prj_found", name: "found" },
     ]);
     const { prompter } = createFakePrompter({ single, text: () => " found " });
 
@@ -56,10 +60,10 @@ describe("pickExistingVercelProject", () => {
       pickExistingVercelProject({
         prompter,
         team: "team-a",
-        projects: [{ id: "prj_recent", name: "recent", updatedAt: 10 }],
+        projects: [{ id: "prj_recent", name: "recent" }],
         search,
       }),
-    ).resolves.toBe("found");
+    ).resolves.toEqual({ id: "prj_found", name: "found" });
     expect(search).toHaveBeenCalledWith("found");
   });
 
@@ -72,17 +76,25 @@ describe("pickExistingVercelProject", () => {
             (option: { label: string }) => option.label === "Search all projects",
           )?.value,
       )
-      .mockResolvedValueOnce("recent");
+      .mockImplementationOnce((options) => {
+        expect(options.options.map((option: { label: string }) => option.label)).toEqual([
+          "Search all projects",
+          "recent",
+        ]);
+        expect(options.search).toBeUndefined();
+        expect(options.initialValue).toBe("prj_recent");
+        return "prj_recent";
+      });
     const { prompter } = createFakePrompter({ single, text: () => "missing" });
 
     await expect(
       pickExistingVercelProject({
         prompter,
         team: "team-a",
-        projects: [{ id: "prj_recent", name: "recent", updatedAt: 10 }],
+        projects: [{ id: "prj_recent", name: "recent" }],
         search: async () => [],
       }),
-    ).resolves.toBe("recent");
+    ).resolves.toEqual({ id: "prj_recent", name: "recent" });
     expect(prompter.note).toHaveBeenCalledWith('No projects matched "missing" in team-a.');
   });
 });

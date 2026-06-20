@@ -1,12 +1,11 @@
 import { join } from "node:path";
 
-import { createPromptCommandOutput } from "#setup/cli/index.js";
+import { createPromptCommandOutput, withNetworkSpinner } from "#setup/cli/index.js";
 
 import { appendEnv } from "../append-env.js";
 import { isProjectResolved } from "../project-resolution.js";
 import type { Prompter } from "../prompter.js";
 import { runVercelEnvPull } from "../run-vercel-link.js";
-import { withNetworkSpinner } from "../vercel-project.js";
 import {
   requireProjectPath,
   type ResolvedAiGatewayCredentials,

@@ -25,7 +25,7 @@ export interface LinkProjectOptions {
 
 /**
  * THE PROJECT BOX. Executes the resolved Vercel project plan after scaffolding,
- * once the project directory exists (so eve can write Vercel's link metadata).
+ * once the project directory exists (so `vercel link` can write its metadata).
  * The gather prompts for nothing: every decision was made up front by the
  * resolve-provisioning box, so `perform` owns all the work.
  *
@@ -78,6 +78,11 @@ export function linkVercelProject(
       if (resolution.kind === "unresolved") {
         throw new Error(
           "Linked the directory, but could not resolve the Vercel project from its link metadata.",
+        );
+      }
+      if (resolution.projectId !== linked.projectId) {
+        throw new Error(
+          `The linked project does not match the selected project: expected ${linked.projectId}, found ${resolution.projectId}.`,
         );
       }
       return resolution;

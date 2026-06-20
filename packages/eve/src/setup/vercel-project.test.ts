@@ -14,6 +14,7 @@ import {
   pickProject,
   pickTeam,
   requireAuth,
+  resolveProjectByNameOrId,
   validateTeam,
 } from "./vercel-project.js";
 
@@ -151,11 +152,12 @@ describe("pickProject", () => {
     );
     const stop = vi.fn();
     const spinner = vi.fn((_message: string) => ({ stop }));
-    const prompter = createSpyPrompter({ spinner, single: async () => "p1" });
+    const prompter = createSpyPrompter({ spinner, single: async () => "prj_p1" });
 
     await expect(pickProject(prompter, "/tmp/eve-agent", "team-a")).resolves.toEqual({
-      project: "p1",
-      exists: true,
+      kind: "existing",
+      project: { projectId: "prj_p1", projectName: "p1" },
+      team: "team-a",
     });
     // Randomized copy: the team name must still anchor the step.
     expect(spinner.mock.calls[0]?.[0]).toContain("team-a");
@@ -235,23 +237,36 @@ describe("assertNewProjectNameAvailable", () => {
   });
 });
 
+describe("resolveProjectByNameOrId", () => {
+  it("maps Vercel API fields to the stable project identity", async () => {
+    mockedCaptureVercel.mockResolvedValue(
+      captured(JSON.stringify({ id: "prj_existing", name: "my-agent", accountId: "team_a" })),
+    );
+
+    await expect(resolveProjectByNameOrId("/tmp/eve-agent", "team-a", "my-agent")).resolves.toEqual(
+      { projectId: "prj_existing", projectName: "my-agent" },
+    );
+  });
+});
+
 describe("linkProject", () => {
   it("links a resolved existing project through `vercel link`", async () => {
-    mockedCaptureVercel.mockResolvedValue(
-      captured(JSON.stringify({ id: "prj_existing", name: "my-agent", accountId: "team-a" })),
-    );
     const { prompter } = createFakePrompter();
 
     await expect(
       linkProject(
         prompter,
         "/tmp/eve-agent",
-        { kind: "existing", project: "my-agent", team: "team-a" },
+        {
+          kind: "existing",
+          project: { projectId: "prj_existing", projectName: "my-agent" },
+          team: "team-a",
+        },
         createPromptCommandOutput(prompter.log),
       ),
-    ).resolves.toBe(true);
+    ).resolves.toEqual({ projectId: "prj_existing", projectName: "my-agent" });
 
-    expect(mockedCaptureVercel).toHaveBeenCalledTimes(1);
+    expect(mockedCaptureVercel).not.toHaveBeenCalled();
     expect(mockedRunVercel).toHaveBeenCalledWith(
       ["link", "--project", "prj_existing", "--scope", "team-a", "--yes"],
       expect.objectContaining({ cwd: "/tmp/eve-agent", nonInteractive: true }),
@@ -259,9 +274,6 @@ describe("linkProject", () => {
   });
 
   it("surfaces a failed `vercel link` as an incomplete link", async () => {
-    mockedCaptureVercel.mockResolvedValue(
-      captured(JSON.stringify({ id: "prj_existing", name: "my-agent", accountId: "team-a" })),
-    );
     mockedRunVercel.mockResolvedValue(false);
     const { prompter } = createFakePrompter();
 
@@ -269,10 +281,14 @@ describe("linkProject", () => {
       linkProject(
         prompter,
         "/tmp/eve-agent",
-        { kind: "existing", project: "my-agent", team: "team-a" },
+        {
+          kind: "existing",
+          project: { projectId: "prj_existing", projectName: "my-agent" },
+          team: "team-a",
+        },
         createPromptCommandOutput(prompter.log),
       ),
-    ).resolves.toBe(false);
+    ).resolves.toBeUndefined();
   });
 
   it("fails a new-project plan when that project name already exists", async () => {
@@ -291,23 +307,6 @@ describe("linkProject", () => {
     ).rejects.toThrow(
       'Vercel project "my-agent" already exists in team-a. Pass --project my-agent to link it, or choose a different project name.',
     );
-    expect(mockedRunVercel).not.toHaveBeenCalled();
-  });
-
-  it("fails an existing-project plan when the project cannot be resolved exactly", async () => {
-    mockedCaptureVercel.mockResolvedValue(
-      failedCapture(JSON.stringify({ error: { code: "not_found", message: "Project not found" } })),
-    );
-    const { prompter } = createFakePrompter();
-
-    await expect(
-      linkProject(
-        prompter,
-        "/tmp/eve-agent",
-        { kind: "existing", project: "missing-agent", team: "team-a" },
-        createPromptCommandOutput(prompter.log),
-      ),
-    ).rejects.toThrow('Vercel project "missing-agent" was not found in team-a.');
     expect(mockedRunVercel).not.toHaveBeenCalled();
   });
 
@@ -330,7 +329,7 @@ describe("linkProject", () => {
         { kind: "new", project: "my-agent", team: "team-a" },
         createPromptCommandOutput(prompter.log),
       ),
-    ).resolves.toBe(true);
+    ).resolves.toEqual({ projectId: "prj_new", projectName: "my-agent" });
     expect(mockedCaptureVercel).toHaveBeenNthCalledWith(
       1,
       ["api", "/v9/projects/my-agent", "--scope", "team-a", "--raw"],
@@ -380,16 +379,13 @@ function stubVercel(responses: {
         ? failed()
         : { ok: true, stdout: JSON.stringify({ teams: responses.teams }) };
     }
-    if (args[0] === "api" && args[1]?.startsWith("/v9/projects?limit=20")) {
+    if (args[0] === "project" && args[1] === "ls") {
       return responses.projects === undefined
         ? failed()
         : {
             ok: true,
             stdout: JSON.stringify({
-              projects: responses.projects.map((project, index) => ({
-                ...project,
-                updatedAt: project.updatedAt ?? index,
-              })),
+              projects: responses.projects,
             }),
           };
     }
@@ -439,29 +435,31 @@ describe("pickTeam selection", () => {
 });
 
 describe("pickProject selection", () => {
-  it("returns an existing selection as exists:true", async () => {
+  it("returns an existing project with its stable id", async () => {
     stubVercel({
       projects: [
         { name: "alpha", id: "prj_a" },
         { name: "beta", id: "prj_b" },
       ],
     });
-    const { prompter, selectMessages } = answeringPrompter({ selects: ["beta"] });
+    const { prompter, selectMessages } = answeringPrompter({ selects: ["prj_b"] });
 
     await expect(pickProject(prompter, "/tmp/parent", "team")).resolves.toEqual({
-      project: "beta",
-      exists: true,
+      kind: "existing",
+      project: { projectId: "prj_b", projectName: "beta" },
+      team: "team",
     });
     expect(selectMessages).toEqual(["Project to link"]);
   });
 
-  it("returns a typed-in name as exists:false when no projects exist", async () => {
+  it("returns a new-project plan when no projects exist", async () => {
     stubVercel({ projects: [] });
     const { prompter } = answeringPrompter({ texts: ["fresh-agent"] });
 
     await expect(pickProject(prompter, "/tmp/parent", "team")).resolves.toEqual({
+      kind: "new",
       project: "fresh-agent",
-      exists: false,
+      team: "team",
     });
   });
 

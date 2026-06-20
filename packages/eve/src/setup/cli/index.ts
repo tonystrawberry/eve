@@ -9,6 +9,7 @@ export {
   withPhase,
 } from "./channel-setup-prompter.js";
 export { createPromptCommandOutput, type PromptCommandLog } from "./command-output.js";
+export { withNetworkSpinner } from "./network-spinner.js";
 export { runSelectComponent, SelectComponent, type SelectGuard } from "./select-component.js";
 export { createSelectOptionCodec, type SelectOptionCodec } from "./select-option-codec.js";
 export {

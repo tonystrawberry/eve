@@ -1,12 +1,15 @@
-import { createPromptCommandOutput, whimsyFor } from "#setup/cli/index.js";
+import { createPromptCommandOutput, whimsyFor, withNetworkSpinner } from "#setup/cli/index.js";
 import { HumanActionRequiredError } from "#setup/human-action.js";
 import { captureVercel, runVercel, type VercelCaptureFailure } from "#setup/primitives/index.js";
 import pc from "picocolors";
 import { z } from "zod";
 
-import type { ProjectResolution } from "./project-resolution.js";
+import {
+  assertNoLegacyProjectLinkDirectory,
+  type ProjectResolution,
+} from "./project-resolution.js";
 import type { Prompter } from "./prompter.js";
-import type { ResolvedVercelProjectSpec } from "./state.js";
+import type { ResolvedVercelProjectSpec, VercelProjectIdentity } from "./state.js";
 import {
   isConflictApiFailure,
   isForbiddenApiFailure,
@@ -23,21 +26,10 @@ import {
 } from "./vercel-project-api.js";
 import { pickExistingVercelProject } from "./vercel-project-picker.js";
 
-export {
-  listRecentProjects,
-  listTeams,
-  requireVercelTeamAccess,
-  searchProjects,
-  type VercelProjectOperationOptions,
-} from "./vercel-project-api.js";
-
 const VercelProjectReferenceSchema = z.object({
   id: z.string().min(1),
   name: z.string().min(1),
-  accountId: z.string().min(1),
 });
-
-export type VercelProjectReference = z.infer<typeof VercelProjectReferenceSchema>;
 
 export interface PickProjectOptions extends VercelProjectOperationOptions {
   /** Whether an empty project list may fall back to entering a name to create. */
@@ -48,35 +40,17 @@ export function unresolvedProject(): ProjectResolution {
   return { kind: "unresolved" };
 }
 
-/**
- * Runs a network reach behind a section-like spinner so the user sees the CLI
- * is working, not hung. The spinner clears whether the work resolves or throws,
- * and degrades to nothing when the prompter has no spinner (headless/test).
- */
-export async function withNetworkSpinner<T>(
-  prompter: Prompter,
-  message: string,
-  task: () => Promise<T>,
-): Promise<T> {
-  const spinner = prompter.log.spinner?.(message);
-  try {
-    return await task();
-  } finally {
-    spinner?.stop();
-  }
-}
-
 /** Resolves the linked project id from a resolution, if any. */
 export function projectIdFromResolution(project: ProjectResolution): string | undefined {
   return project.kind === "unresolved" ? undefined : project.projectId;
 }
 
-function parseProjectReference(stdout: string, description: string): VercelProjectReference {
+function parseProjectReference(stdout: string, description: string): VercelProjectIdentity {
   const parsed = VercelProjectReferenceSchema.safeParse(parseVercelJson(stdout, description));
   if (!parsed.success) {
     throw new Error(`Could not read Vercel project identity from ${description}.`);
   }
-  return parsed.data;
+  return { projectId: parsed.data.id, projectName: parsed.data.name };
 }
 
 /** Resolves one project by exact name or id through the Vercel API. */
@@ -85,7 +59,7 @@ export async function resolveProjectByNameOrId(
   team: string,
   projectNameOrId: string,
   options: VercelProjectOperationOptions = {},
-): Promise<VercelProjectReference | null> {
+): Promise<VercelProjectIdentity | null> {
   const result = normalizeVercelApiResult(
     await captureVercel(
       ["api", `/v9/projects/${encodeURIComponent(projectNameOrId)}`, "--scope", team, "--raw"],
@@ -110,7 +84,7 @@ async function createProject(
   projectName: string,
   onOutput: ReturnType<typeof createPromptCommandOutput>,
   options: VercelProjectOperationOptions,
-): Promise<VercelProjectReference> {
+): Promise<VercelProjectIdentity> {
   const result = normalizeVercelApiResult(
     await captureVercel(
       [
@@ -369,25 +343,13 @@ export async function pickTeam(
   });
 }
 
-/**
- * A picked Vercel project. `exists` distinguishes a project the user selected
- * from the existing list (link it) from a name they typed because none exist
- * yet (create it), so the caller can build the right `new` vs `existing` plan.
- */
-export interface ArgsPickedProject {
-  /** Project slug: an existing project's name, or a name to create. */
-  project: string;
-  /** True for a selected existing project; false for a typed-in name to create. */
-  exists: boolean;
-}
-
 /** Picks an existing project under a team, or a name to create when none exist. */
 export async function pickProject(
   prompter: Prompter,
   projectRoot: string,
   team: string,
   options: PickProjectOptions = {},
-): Promise<ArgsPickedProject> {
+): Promise<ResolvedVercelProjectSpec> {
   const projects = await withNetworkSpinner(prompter, whimsyFor("projects", team), () =>
     listRecentProjects(projectRoot, team, options),
   );
@@ -402,7 +364,7 @@ export async function pickProject(
       validate: (value) =>
         value.trim().length === 0 ? "Project name cannot be empty." : undefined,
     });
-    return { project, exists: false };
+    return { kind: "new", project, team };
   }
   const project = await pickExistingVercelProject({
     prompter,
@@ -413,7 +375,11 @@ export async function pickProject(
         searchProjects(projectRoot, team, query, { signal: options.signal }),
       ),
   });
-  return { project, exists: true };
+  return {
+    kind: "existing",
+    project: { projectId: project.id, projectName: project.name },
+    team,
+  };
 }
 
 /** Returns a project name for a new Vercel project, prompting when the default exists. */
@@ -469,9 +435,10 @@ export async function linkProject(
   spec: ResolvedVercelProjectSpec,
   onOutput: ReturnType<typeof createPromptCommandOutput>,
   options: VercelProjectOperationOptions = {},
-): Promise<boolean> {
+): Promise<VercelProjectIdentity | undefined> {
+  await assertNoLegacyProjectLinkDirectory(projectRoot);
   const scope = ["--scope", spec.team];
-  let project: VercelProjectReference;
+  let project: VercelProjectIdentity;
   if (spec.kind === "new") {
     project = await withNetworkSpinner(
       prompter,
@@ -482,17 +449,13 @@ export async function linkProject(
       },
     );
   } else {
-    const existing = await resolveProjectByNameOrId(projectRoot, spec.team, spec.project, options);
-    if (existing === null) {
-      throw new Error(`Vercel project "${spec.project}" was not found in ${spec.team}.`);
-    }
-    project = existing;
+    project = spec.project;
   }
-  return withNetworkSpinner(
+  const linked = await withNetworkSpinner(
     prompter,
-    `Linking this directory to Vercel project "${project.name}"...`,
+    `Linking this directory to Vercel project "${project.projectName}"...`,
     () =>
-      runVercel(["link", "--project", project.id, ...scope, "--yes"], {
+      runVercel(["link", "--project", project.projectId, ...scope, "--yes"], {
         cwd: projectRoot,
         onOutput,
         // The plan already names the team and project, so the link needs no
@@ -506,4 +469,5 @@ export async function linkProject(
         signal: options.signal,
       }),
   );
+  return linked ? project : undefined;
 }

@@ -1,4 +1,4 @@
-import { createPromptCommandOutput } from "#setup/cli/index.js";
+import { createPromptCommandOutput, withNetworkSpinner } from "#setup/cli/index.js";
 import { detectPackageManager, type PackageManagerKind } from "#setup/package-manager.js";
 import { spawnPackageManager } from "#setup/primitives/index.js";
 import { getVercelAuthStatus } from "#setup/vercel-project.js";
@@ -41,19 +41,6 @@ function globalInstallArguments(kind: PackageManagerKind): string[] {
   }
 }
 
-async function withSpinner<T>(
-  prompter: Prompter,
-  message: string,
-  task: () => Promise<T>,
-): Promise<T> {
-  const spinner = prompter.log.spinner?.(message);
-  try {
-    return await task();
-  } finally {
-    spinner?.stop();
-  }
-}
-
 /**
  * THE INSTALL FLOW for the dev TUI's `/vc`: the fix command for the
  * "Vercel CLI not found" diagnostic, so every diagnostic has a matching
@@ -78,26 +65,29 @@ export async function runInstallVercelCliFlow(input: {
     return status !== "cli-missing";
   };
 
-  if (await withSpinner(prompter, "Checking for the Vercel CLI…", probe)) {
+  if (await withNetworkSpinner(prompter, "Checking for the Vercel CLI…", probe)) {
     signal?.throwIfAborted();
     return { kind: "already" };
   }
   signal?.throwIfAborted();
 
   const manager = await deps.detectPackageManager(appRoot);
-  const ok = await withSpinner(prompter, `Installing the Vercel CLI with ${manager.kind}…`, () =>
-    deps.spawnPackageManager(manager.kind, appRoot, globalInstallArguments(manager.kind), {
-      onOutput,
-      signal,
-      // A global install never prompts; closing stdin keeps it from contending
-      // with the TUI's raw-mode key consumer.
-      nonInteractive: true,
-    }),
+  const ok = await withNetworkSpinner(
+    prompter,
+    `Installing the Vercel CLI with ${manager.kind}…`,
+    () =>
+      deps.spawnPackageManager(manager.kind, appRoot, globalInstallArguments(manager.kind), {
+        onOutput,
+        signal,
+        // A global install never prompts; closing stdin keeps it from contending
+        // with the TUI's raw-mode key consumer.
+        nonInteractive: true,
+      }),
   );
   if (signal?.aborted === true) return { kind: "cancelled" };
   if (!ok) return { kind: "failed" };
 
-  const present = await withSpinner(prompter, "Verifying the Vercel CLI…", probe);
+  const present = await withNetworkSpinner(prompter, "Verifying the Vercel CLI…", probe);
   signal?.throwIfAborted();
   return present ? { kind: "installed" } : { kind: "failed" };
 }

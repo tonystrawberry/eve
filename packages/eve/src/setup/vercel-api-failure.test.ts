@@ -51,6 +51,13 @@ describe("Vercel API failure classification", () => {
     expect(isForbiddenApiFailure(result.failure)).toBe(true);
   });
 
+  it("classifies the Vercel CLI's stderr-only resource errors", () => {
+    expect(isNotFoundApiFailure(failure({ stderr: "Error: Project not found. (404)" }))).toBe(true);
+    expect(isConflictApiFailure(failure({ stderr: "Error: Project already exists. (409)" }))).toBe(
+      true,
+    );
+  });
+
   it("does not infer an HTTP status from the process exit code or command text", () => {
     const operational = failure({
       code: 403,
